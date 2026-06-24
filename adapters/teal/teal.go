@@ -23,6 +23,14 @@ const (
 	msgMixedAccountFmt      = "mixed-account requests are not supported: imp %q account %q differs from request account %q"
 )
 
+type extBidPrebidType struct {
+	Prebid *extBidPrebidTypeInner `json:"prebid,omitempty"`
+}
+
+type extBidPrebidTypeInner struct {
+	Type openrtb_ext.BidType `json:"type,omitempty"`
+}
+
 // adapter is the Teal openrtb2 bidder.
 type adapter struct {
 	endpoint string
@@ -316,15 +324,24 @@ func (a *adapter) MakeBids(request *openrtb2.BidRequest, _ *adapters.RequestData
 	return bidderResponse, errs
 }
 
-// getBidType resolves the bid's media type from its matching impression, looked
-// up by ID via impsByID (built once in MakeBids to avoid a per-bid scan of
-// request.Imp). Priority order is banner > video > native.
+// getBidType resolves the bid's media type from either its own ext or its matching impression.
+// It looks up the priority in this order:
+// 1. Explicitly declared in bid.ext.prebid.type
+// 2. Inferred from the matching impression (looked up by ID via impsByID). Priority order is banner > video > native.
 //
-// When no imp matches the bid's ImpID, or the matching imp declares no
-// recognized media type, getBidType returns an error so MakeBids can skip the
-// bid and surface the problem in logs rather than silently mis-typing it as
-// banner.
+// When no explicitly declared type exists, no imp matches the bid's ImpID, or the matching imp
+// declares no recognized media type, getBidType returns an error so MakeBids can skip the
+// bid and surface the problem in logs rather than silently mis-typed as banner.
 func getBidType(bid *openrtb2.Bid, impsByID map[string]openrtb2.Imp) (openrtb_ext.BidType, error) {
+	// 1. Check if the bidder explicitly declared the bid type in bid.ext.prebid.type
+	if len(bid.Ext) > 0 {
+		var bidExt extBidPrebidType
+		if err := jsonutil.Unmarshal(bid.Ext, &bidExt); err == nil && bidExt.Prebid != nil && bidExt.Prebid.Type != "" {
+			return bidExt.Prebid.Type, nil
+		}
+	}
+
+	// 2. Fall back to inferring from the impression
 	if imp, ok := impsByID[bid.ImpID]; ok {
 		switch {
 		case imp.Banner != nil:
@@ -335,6 +352,7 @@ func getBidType(bid *openrtb2.Bid, impsByID map[string]openrtb2.Imp) (openrtb_ex
 			return openrtb_ext.BidTypeNative, nil
 		}
 	}
+
 	return "", fmt.Errorf("failed to determine bid type for imp %q", bid.ImpID)
 }
 
